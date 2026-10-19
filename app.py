@@ -255,143 +255,58 @@ with tab_campo:
         
         st.markdown("---")
         
-       # ----- TAB: VER OBSERVACIONES -----
-with tab_ver:
-    st.markdown("### 📋 Listado de Observaciones")
-    
-    # ============================================================
-    # FILTROS (incluyendo nuevo filtro de estado de visita)
-    # ============================================================
-    col_f1, col_f2, col_f3 = st.columns(3)
-    
-    with col_f1:
-        estado_filtro = st.multiselect(
-            "🔍 Filtrar por Estado Original:",
-            options=df_filtrado["ESTADO"].dropna().unique().tolist() if "ESTADO" in df_filtrado.columns else [],
-            default=[]
-        )
-    
-    with col_f2:
-        distrito_filtro = st.multiselect(
-            "🔍 Filtrar por Distrito:",
-            options=df_filtrado["DISTRITO"].dropna().unique().tolist() if "DISTRITO" in df_filtrado.columns else [],
-            default=[]
-        )
-    
-    with col_f3:
-        # NUEVO FILTRO: Estado de Visita
-        estado_visita_filtro = st.radio(
-            "📍 Estado de Visita:",
-            options=["Todas", "⏳ Pendientes", "✅ Visitadas"],
-            index=0,
-            horizontal=True
-        )
-    
-    # Aplicar filtros
-    df_mostrar = df_filtrado.copy()
-    
-    # Filtro por estado original
-    if estado_filtro:
-        df_mostrar = df_mostrar[df_mostrar["ESTADO"].isin(estado_filtro)]
-    
-    # Filtro por distrito
-    if distrito_filtro:
-        df_mostrar = df_mostrar[df_mostrar["DISTRITO"].isin(distrito_filtro)]
-    
-    # NUEVO: Filtro por estado de visita
-    if estado_visita_filtro == "⏳ Pendientes":
-        df_mostrar = df_mostrar[
-            ~df_mostrar["CODIGO"].isin([
-                cod for cod in df_mostrar["CODIGO"] 
-                if st.session_state.avance_por_codigo.get(cod, {}).get("visitado", False)
-            ])
-        ]
-    elif estado_visita_filtro == "✅ Visitadas":
-        df_mostrar = df_mostrar[
-            df_mostrar["CODIGO"].isin([
-                cod for cod in df_mostrar["CODIGO"] 
-                if st.session_state.avance_por_codigo.get(cod, {}).get("visitado", False)
-            ])
-        ]
-    
-    # Mostrar indicador de cuántos registros coinciden
-    st.info(f" Mostrando **{len(df_mostrar)}** de **{len(df_filtrado)}** observaciones")
-    
-    # Agregar columna de estado de visita
-    df_mostrar = df_mostrar.copy()
-    df_mostrar["ESTADO_VISITA"] = df_mostrar["CODIGO"].apply(
-        lambda x: "✅ Visitada" if st.session_state.avance_por_codigo.get(x, {}).get("visitado", False) else "⏳ Pendiente"
-    )
-    
-    # Reordenar columnas para mostrar ESTADO_VISITA al inicio
-    cols_tabla = ["ESTADO_VISITA", "CODIGO", "OBSERVACION", "ESTADO", "DISTRITO", "LATITUD", "LONGITUD"]
-    cols_disponibles = [c for c in cols_tabla if c in df_mostrar.columns]
-    
-    # Mostrar tabla
-    st.dataframe(
-        df_mostrar[cols_disponibles],
-        use_container_width=True,
-        height=400
-    )
-    
-    # ============================================================
-    # RESUMEN RÁPIDO DE FILTROS
-    # ============================================================
-    col_r1, col_r2, col_r3 = st.columns(3)
-    
-    with col_r1:
-        total_pendientes = len([
-            cod for cod in df_filtrado["CODIGO"] 
-            if not st.session_state.avance_por_codigo.get(cod, {}).get("visitado", False)
-        ])
-        st.metric("⏳ Pendientes", total_pendientes)
-    
-    with col_r2:
-        total_visitadas = len([
-            cod for cod in df_filtrado["CODIGO"] 
-            if st.session_state.avance_por_codigo.get(cod, {}).get("visitado", False)
-        ])
-        st.metric("✅ Visitadas", total_visitadas)
-    
-    with col_r3:
-        st.metric("📋 Total", len(df_filtrado))
-    
-    # ============================================================
-    # MAPA
-    # ============================================================
-    st.markdown("---")
-    st.markdown("### ️ Mapa de Observaciones")
-    
-    # Opción para mostrar solo visitadas/pendientes en el mapa
-    mapa_filtro = st.radio(
-        "🗺️ Mostrar en mapa:",
-        options=["Todas", "⏳ Solo Pendientes", "✅ Solo Visitadas"],
-        index=0,
-        horizontal=True
-    )
-    
-    df_mapa = df_filtrado.copy()
-    if mapa_filtro == " Solo Pendientes":
-        df_mapa = df_mapa[
-            ~df_mapa["CODIGO"].isin([
-                cod for cod in df_mapa["CODIGO"] 
-                if st.session_state.avance_por_codigo.get(cod, {}).get("visitado", False)
-            ])
-        ]
-    elif mapa_filtro == "✅ Solo Visitadas":
-        df_mapa = df_mapa[
-            df_mapa["CODIGO"].isin([
-                cod for cod in df_mapa["CODIGO"] 
-                if st.session_state.avance_por_codigo.get(cod, {}).get("visitado", False)
-            ])
-        ]
-    
-    mapa = crear_mapa(df_mapa)
-    if mapa:
-        from streamlit_folium import st_folium
-        st_folium(mapa, width=None, height=500, returned_objects=[])
-    else:
-        st.warning("Sin coordenadas válidas para graficar.")
+        # Tabs internos para Técnico de Campo
+        tab_ver, tab_registrar, tab_reportes = st.tabs(["📋 Ver Observaciones", "📸 Registrar en Campo", "📥 Generar Reportes"])
+        
+        # ----- TAB: VER OBSERVACIONES -----
+        with tab_ver:
+            st.markdown("### 📋 Listado de Observaciones")
+            
+            # Filtros adicionales
+            col_f1, col_f2 = st.columns(2)
+            with col_f1:
+                estado_filtro = st.multiselect(
+                    "Filtrar por Estado:",
+                    options=df_filtrado["ESTADO"].dropna().unique().tolist() if "ESTADO" in df_filtrado.columns else [],
+                    default=[]
+                )
+            with col_f2:
+                distrito_filtro = st.multiselect(
+                    "Filtrar por Distrito:",
+                    options=df_filtrado["DISTRITO"].dropna().unique().tolist() if "DISTRITO" in df_filtrado.columns else [],
+                    default=[]
+                )
+            
+            # Aplicar filtros
+            df_mostrar = df_filtrado.copy()
+            if estado_filtro:
+                df_mostrar = df_mostrar[df_mostrar["ESTADO"].isin(estado_filtro)]
+            if distrito_filtro:
+                df_mostrar = df_mostrar[df_mostrar["DISTRITO"].isin(distrito_filtro)]
+            
+            # Mostrar tabla con indicador de visitado
+            df_mostrar["VISITADA"] = df_mostrar["CODIGO"].map(
+                lambda x: "✅ Visitada" if st.session_state.avance_por_codigo.get(x, {}).get("visitado", False) else "⏳ Pendiente"
+            )
+            
+            cols_tabla = ["VISITADA", "CODIGO", "OBSERVACION", "ESTADO", "DISTRITO", "LATITUD", "LONGITUD"]
+            cols_disponibles = [c for c in cols_tabla if c in df_mostrar.columns]
+            
+            st.dataframe(
+                df_mostrar[cols_disponibles],
+                use_container_width=True,
+                height=400
+            )
+            
+            # Mapa
+            st.markdown("---")
+            st.markdown("### 🗺️ Mapa de Observaciones")
+            mapa = crear_mapa(df_filtrado)
+            if mapa:
+                from streamlit_folium import st_folium
+                st_folium(mapa, width=None, height=500, returned_objects=[])
+            else:
+                st.warning("Sin coordenadas válidas para graficar.")
         
         # ----- TAB: REGISTRAR EN CAMPO -----
         with tab_registrar:
