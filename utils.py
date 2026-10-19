@@ -1,21 +1,23 @@
 # -*- coding: utf-8 -*-
 """
 ENSA Corporate Theme - Utilidades
-CORRECCIÓN CRÍTICA: Zona UTM 17S (no 18M) para Lambayeque
+CORRECCIÓN: Fotos ajustadas + Exportación ZIP por código
 """
 import io
+import os
 import utm
 import pandas as pd
 import folium
 from datetime import datetime
 from fpdf import FPDF
 from docx import Document
-from docx.shared import Pt, RGBColor, Inches
+from docx.shared import Pt, RGBColor, Inches, Cm
 from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 from pathlib import Path
-import base64
+import zipfile
 
 # ============================================================
 # PALETA CORPORATIVA
@@ -32,33 +34,23 @@ BRAND = {
 FONT_TITLE = "Montserrat"
 FONT_BODY  = "Open Sans"
 
+FOTOS_DIR = Path("fotos_campo")
+FOTOS_DIR.mkdir(exist_ok=True)
+
 def hex_rgb(hexcolor: str):
     h = hexcolor.lstrip("#")
     return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
 
 # ============================================================
-# ⚠️ CORRECCIÓN CRÍTICA: Zona UTM 17S para Lambayeque
-# Lambayeque: lon ~-80° → Zona 17, hemisferio Sur
+# ZONA UTM 17S - Lambayeque
 # ============================================================
 ZONE_NUMBER = 17
-ZONE_LETTER = 'S'  # Sur (no M que es Norte)
 
 def utm_to_latlon(este, norte):
-    """
-    Convierte UTM a Lat/Lon para Lambayeque, Perú.
-    Zona 17, Hemisferio Sur (northern=False)
-    """
     try:
-        # Zona 17, hemisferio sur (northern=False)
-        lat, lon = utm.to_latlon(
-            float(este), 
-            float(norte), 
-            17, 
-            northern=False  # ← CRÍTICO: Lambayeque está al sur del ecuador
-        )
+        lat, lon = utm.to_latlon(float(este), float(norte), ZONE_NUMBER, northern=False)
         return round(lat, 6), round(lon, 6)
-    except Exception as e:
-        print(f"Error conversión UTM: {e}, E={este}, N={norte}")
+    except Exception:
         return None, None
 
 def google_maps_link(lat, lon):
@@ -76,12 +68,9 @@ def mailto_link(to, subject, body):
 # CARGA DEL EXCEL
 # ============================================================
 def cargar_excel(archivo):
-    """Carga Excel con detección robusta de hoja y encabezados."""
     import re
-    
     todas_hojas = pd.read_excel(archivo, sheet_name=None, header=None)
     
-    # Seleccionar hoja con más datos
     mejor_hoja = None
     max_filas = 0
     for nombre_hoja, df_temp in todas_hojas.items():
@@ -94,7 +83,6 @@ def cargar_excel(archivo):
     
     df = pd.read_excel(archivo, sheet_name=mejor_hoja, header=None)
     
-    # Buscar fila de encabezados
     fila_encabezado = None
     for i in range(min(10, len(df))):
         fila_str = ' '.join([str(x) for x in df.iloc[i] if pd.notna(x)]).lower()
@@ -105,15 +93,12 @@ def cargar_excel(archivo):
     if fila_encabezado is None:
         fila_encabezado = 2
     
-    print(f"✅ Fila de encabezados: {fila_encabezado}")
-    
     df.columns = df.iloc[fila_encabezado]
     df = df.iloc[fila_encabezado + 1:].copy()
     df = df[~df.iloc[:, 0].astype(str).str.contains('---', na=False)]
     df = df.dropna(how='all').reset_index(drop=True)
     df.columns = [str(c).strip() for c in df.columns]
     
-    # Renombrar columnas
     rename_map = {
         'Código': 'CODIGO',
         'Código Alimentador MT': 'AMT',
@@ -143,7 +128,6 @@ def cargar_excel(archivo):
                 df['AMT'] = df[c]
                 break
     
-    # Coordenadas UTM (preferir Ene2023)
     col_e = 'UTM_E' if 'UTM_E' in df.columns else 'UTM_E_ORIG'
     col_n = 'UTM_N' if 'UTM_N' in df.columns else 'UTM_N_ORIG'
     
@@ -156,18 +140,7 @@ def cargar_excel(archivo):
         df["LONGITUD"] = None
     
     df["MAPS_LINK"] = df.apply(lambda r: google_maps_link(r["LATITUD"], r["LONGITUD"]), axis=1)
-    
-    print(f"✅ Columnas finales: {list(df.columns)}")
-    print(f"✅ AMT encontrado: {'AMT' in df.columns}")
     print(f"✅ Total filas: {len(df)}")
-    
-    # Verificar coordenadas
-    if 'LATITUD' in df.columns:
-        lat_validas = df['LATITUD'].dropna()
-        if not lat_validas.empty:
-            print(f"✅ Latitud promedio: {lat_validas.mean():.4f} (debe ser ~-6.7 para Lambayeque)")
-            print(f"✅ Longitud promedio: {df['LONGITUD'].dropna().mean():.4f} (debe ser ~-80.0)")
-    
     return df
 
 # ============================================================
@@ -229,7 +202,7 @@ def crear_mapa(df_filtrado):
     return m
 
 # ============================================================
-# PDF CON FOTOS
+# PDF - FOTOS AJUSTADAS CON PROPORCIÓN
 # ============================================================
 class PDFReport(FPDF):
     def header(self):
@@ -238,9 +211,11 @@ class PDFReport(FPDF):
         self.set_fill_color(*hex_rgb(BRAND["brand_green"]))
         self.rect(105, 0, 105, 10, "F")
         self.set_y(13)
+        self.set_x(10)
         self.set_font("Arial", "B", 13)
         self.set_text_color(*hex_rgb(BRAND["primary_dark_blue"]))
         self.cell(0, 8, "ENSA | Informe de Observaciones MT", 0, 1, "C")
+        self.set_x(10)
         self.set_font("Arial", "I", 8)
         self.set_text_color(*hex_rgb(BRAND["text_secondary"]))
         self.cell(0, 5, f"Trabajamos para tu Desarrollo | {datetime.now().strftime('%d/%m/%Y %H:%M')}", 0, 1, "C")
@@ -248,31 +223,54 @@ class PDFReport(FPDF):
 
     def footer(self):
         self.set_y(-14)
+        self.set_x(10)
         self.set_draw_color(*hex_rgb(BRAND["primary_dark_blue"]))
         self.set_line_width(0.7)
         self.line(10, self.get_y(), 200, self.get_y())
+        self.set_x(10)
         self.set_font("Arial", "I", 8)
         self.set_text_color(*hex_rgb(BRAND["text_secondary"]))
         self.cell(0, 8, f"ENSA · Página {self.page_no()}", 0, 0, "C")
 
     def titulo_seccion(self, txt):
+        self.set_x(10)
         self.set_font("Arial", "B", 12)
         self.set_text_color(*hex_rgb(BRAND["primary_dark_blue"]))
         self.cell(0, 8, txt.upper(), 0, 1)
+        self.set_x(10)
         self.set_draw_color(*hex_rgb(BRAND["brand_green"]))
         self.set_line_width(0.8)
         self.line(10, self.get_y(), 80, self.get_y())
         self.ln(3)
 
     def cuerpo(self, txt):
+        self.set_x(10)
         self.set_font("Arial", "", 9.5)
         self.set_text_color(*hex_rgb(BRAND["text_secondary"]))
         self.multi_cell(0, 5, txt)
 
+def _calcular_dimensiones_foto(img_path, ancho_max_mm=190, alto_max_mm=130):
+    """Calcula dimensiones manteniendo proporción."""
+    try:
+        from PIL import Image
+        with Image.open(img_path) as img:
+            w_px, h_px = img.size
+            ratio = w_px / h_px
+            
+            # Ajustar al ancho máximo
+            ancho = ancho_max_mm
+            alto = ancho / ratio
+            
+            # Si el alto excede, ajustar por alto
+            if alto > alto_max_mm:
+                alto = alto_max_mm
+                ancho = alto * ratio
+            
+            return ancho, alto
+    except Exception:
+        return ancho_max_mm, alto_max_mm
+
 def generar_pdf(df, resumen, fotos_dict=None):
-    """
-    fotos_dict: {codigo: bytes_de_imagen}
-    """
     pdf = PDFReport()
     pdf.add_page()
     pdf.titulo_seccion("Resumen Ejecutivo")
@@ -284,6 +282,7 @@ def generar_pdf(df, resumen, fotos_dict=None):
     pdf.ln(4)
 
     pdf.titulo_seccion("Cantidad por Alimentador MT (AMT)")
+    pdf.set_x(10)
     pdf.set_font("Arial", "B", 9)
     pdf.set_text_color(*hex_rgb(BRAND["background_light"]))
     pdf.set_fill_color(*hex_rgb(BRAND["primary_dark_blue"]))
@@ -294,6 +293,7 @@ def generar_pdf(df, resumen, fotos_dict=None):
     for i, (amt, cant) in enumerate(sorted(resumen["por_amtdf"].items(), key=lambda x: -x[1])):
         fill = i % 2 == 0
         if fill: pdf.set_fill_color(244, 247, 251)
+        pdf.set_x(10)
         pdf.set_text_color(*hex_rgb(BRAND["text_secondary"]))
         pdf.cell(120, 5.5, str(amt), 0, 0, "L", fill)
         pdf.set_text_color(*hex_rgb(BRAND["primary_dark_blue"]))
@@ -305,6 +305,7 @@ def generar_pdf(df, resumen, fotos_dict=None):
     pdf.titulo_seccion("Detalle de Observaciones")
     headers = ["CODIGO", "AMT", "OBSERVACION", "ESTADO", "UBICACION"]
     widths = [26, 20, 74, 26, 44]
+    pdf.set_x(10)
     pdf.set_font("Arial", "B", 8)
     pdf.set_text_color(*hex_rgb(BRAND["background_light"]))
     pdf.set_fill_color(*hex_rgb(BRAND["primary_dark_blue"]))
@@ -313,6 +314,7 @@ def generar_pdf(df, resumen, fotos_dict=None):
     pdf.ln()
     pdf.set_font("Arial", "", 7.5)
     for _, r in df.iterrows():
+        pdf.set_x(10)
         pdf.set_text_color(*hex_rgb(BRAND["text_secondary"]))
         vals = [str(r.get("CODIGO", ""))[:16], str(r.get("AMT", ""))[:10],
                 str(r.get("OBSERVACION", ""))[:70], str(r.get("ESTADO", ""))[:18],
@@ -321,29 +323,63 @@ def generar_pdf(df, resumen, fotos_dict=None):
             pdf.cell(w, 5, v, 1, 0, "L")
         pdf.ln()
     
-    # Agregar fotos al final del PDF
+    # FOTOS AJUSTADAS CON PROPORCIÓN
     if fotos_dict:
         pdf.add_page()
         pdf.titulo_seccion("Fotografías de Campo")
+        
         for codigo, img_bytes in fotos_dict.items():
             try:
-                # Guardar temporalmente para fpdf
-                img_path = f"/tmp/foto_{codigo}.jpg"
+                img_path = FOTOS_DIR / f"foto_{codigo}.jpg"
                 with open(img_path, "wb") as f:
                     f.write(img_bytes)
-                pdf.set_font("Arial", "B", 10)
+                
+                # Calcular dimensiones manteniendo proporción
+                ancho, alto = _calcular_dimensiones_foto(str(img_path), 190, 120)
+                
+                # Verificar si cabe en la página
+                if pdf.get_y() + alto + 20 > 280:
+                    pdf.add_page()
+                
+                # Título del código
+                pdf.set_x(10)
+                pdf.set_font("Arial", "B", 11)
                 pdf.set_text_color(*hex_rgb(BRAND["primary_dark_blue"]))
-                pdf.cell(0, 8, f"Código: {codigo}", 0, 1)
-                pdf.image(img_path, x=10, w=190)
+                pdf.set_fill_color(244, 247, 251)
+                pdf.cell(0, 8, f"  Código: {codigo}", 0, 1, "L", True)
+                
+                # Datos del código
+                row_data = df[df["CODIGO"] == codigo]
+                if not row_data.empty:
+                    r = row_data.iloc[0]
+                    pdf.set_x(10)
+                    pdf.set_font("Arial", "", 8)
+                    pdf.set_text_color(*hex_rgb(BRAND["text_secondary"]))
+                    info = f"AMT: {r.get('AMT','')} | Distrito: {r.get('DISTRITO','')} | Estado: {r.get('ESTADO','')}"
+                    pdf.multi_cell(0, 4, info)
+                    pdf.set_x(10)
+                    pdf.multi_cell(0, 4, f"Obs: {str(r.get('OBSERVACION',''))[:100]}")
+                
+                # Foto centrada y ajustada
+                pdf.ln(2)
+                pdf.set_x(10)
+                pdf.image(str(img_path), x=10, w=ancho, h=alto)
+                pdf.ln(alto + 5)
+                
+                # Línea separadora
+                pdf.set_x(10)
+                pdf.set_draw_color(*hex_rgb(BRAND["secondary_blue"]))
+                pdf.set_line_width(0.3)
+                pdf.line(10, pdf.get_y(), 200, pdf.get_y())
                 pdf.ln(5)
-                Path(img_path).unlink(missing_ok=True)
+                
             except Exception as e:
-                print(f"Error agregando foto {codigo}: {e}")
+                print(f"Error foto {codigo}: {e}")
     
     return bytes(pdf.output())
 
 # ============================================================
-# WORD CON FOTOS
+# WORD - FOTOS EN TABLA
 # ============================================================
 def _run(run, hexcolor, bold=False, size=10, font=FONT_BODY):
     r, g, b = hex_rgb(hexcolor)
@@ -360,6 +396,21 @@ def _shade(cell, hexcolor):
     shd.set(qn("w:fill"), hexcolor.lstrip("#"))
     tcPr.append(shd)
 
+def _set_cell_border(cell, **kwargs):
+    """Aplica bordes a celda."""
+    tc = cell._tc
+    tcPr = tc.get_or_add_tcPr()
+    tcBorders = OxmlElement('w:tcBorders')
+    for edge in ('top', 'left', 'bottom', 'right', 'insideH', 'insideV'):
+        edge_data = kwargs.get(edge)
+        if edge_data:
+            element = OxmlElement(f'w:{edge}')
+            for key in ["sz", "val", "color", "space"]:
+                if key in edge_data:
+                    element.set(qn(f'w:{key}'), str(edge_data[key]))
+            tcBorders.append(element)
+    tcPr.append(tcBorders)
+
 def generar_word(df, resumen, fotos_dict=None):
     doc = Document()
     st = doc.styles["Normal"]
@@ -368,7 +419,9 @@ def generar_word(df, resumen, fotos_dict=None):
     r, g, b = hex_rgb(BRAND["text_secondary"])
     st.font.color.rgb = RGBColor(r, g, b)
 
+    # Banner
     t = doc.add_table(rows=2, cols=1)
+    t.alignment = WD_TABLE_ALIGNMENT.CENTER
     _shade(t.rows[0].cells[0], BRAND["primary_dark_blue"])
     p = t.rows[0].cells[0].paragraphs[0]
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -380,6 +433,7 @@ def generar_word(df, resumen, fotos_dict=None):
     doc.add_paragraph()
     _run(doc.add_paragraph().add_run(f"Fecha: {datetime.now().strftime('%d/%m/%Y %H:%M')}"), BRAND["text_secondary"], False, 9)
 
+    # Resumen
     h = doc.add_paragraph()
     _run(h.add_run("RESUMEN EJECUTIVO"), BRAND["primary_dark_blue"], True, 14, FONT_TITLE)
     for label, val in [("Total de observaciones", resumen["total"]), ("Pendientes (Por Subsanar)", resumen["pendientes"]), ("Ejecutadas / Subsanadas", resumen["ejecutadas"])]:
@@ -411,15 +465,72 @@ def generar_word(df, resumen, fotos_dict=None):
             pp = doc.add_paragraph()
             _run(pp.add_run(f"{lbl}: "), BRAND["primary_dark_blue"], True, 9.5)
             _run(pp.add_run(str(val)), BRAND["text_secondary"], False, 9.5)
-        
-        # Agregar foto si existe
-        if fotos_dict and r.get('CODIGO') in fotos_dict:
-            img_bytes = fotos_dict[r.get('CODIGO')]
-            img_stream = io.BytesIO(img_bytes)
-            doc.add_picture(img_stream, width=Inches(5))
-            doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
-        
         doc.add_paragraph("_" * 90)
+
+    # FOTOS EN TABLA CON DATOS DEL CÓDIGO
+    if fotos_dict:
+        doc.add_page_break()
+        h = doc.add_paragraph()
+        _run(h.add_run("FOTOGRAFÍAS DE CAMPO"), BRAND["primary_dark_blue"], True, 14, FONT_TITLE)
+        
+        for codigo, img_bytes in fotos_dict.items():
+            try:
+                # Buscar datos del código
+                row_data = df[df["CODIGO"] == codigo]
+                
+                # Tabla de 2 columnas: datos | foto
+                tabla_foto = doc.add_table(rows=1, cols=2)
+                tabla_foto.alignment = WD_TABLE_ALIGNMENT.CENTER
+                
+                # Celda de datos (izquierda)
+                celda_datos = tabla_foto.rows[0].cells[0]
+                celda_datos.width = Cm(7)
+                _shade(celda_datos, "#F4F7FB")
+                
+                # Título código
+                p_cod = celda_datos.paragraphs[0]
+                p_cod.alignment = WD_ALIGN_PARAGRAPH.LEFT
+                _run(p_cod.add_run(f"CÓDIGO: {codigo}"), BRAND["primary_dark_blue"], True, 11, FONT_TITLE)
+                
+                # Datos
+                if not row_data.empty:
+                    r = row_data.iloc[0]
+                    for lbl, val in [
+                        ("AMT:", r.get("AMT", "")),
+                        ("Distrito:", r.get("DISTRITO", "")),
+                        ("Estado:", r.get("ESTADO", "")),
+                        ("UTM 17S:", f"E={r.get('UTM_E','')} N={r.get('UTM_N','')}"),
+                        ("Lat/Lon:", f"{r.get('LATITUD','')}, {r.get('LONGITUD','')}"),
+                    ]:
+                        p = celda_datos.add_paragraph()
+                        _run(p.add_run(f"{lbl} "), BRAND["primary_dark_blue"], True, 9)
+                        _run(p.add_run(str(val)), BRAND["text_secondary"], False, 9)
+                    
+                    # Observación
+                    p_obs = celda_datos.add_paragraph()
+                    _run(p_obs.add_run("Observación: "), BRAND["primary_dark_blue"], True, 9)
+                    _run(p_obs.add_run(str(r.get("OBSERVACION", ""))[:150]), BRAND["text_secondary"], False, 8)
+                
+                # Celda de foto (derecha)
+                celda_foto = tabla_foto.rows[0].cells[1]
+                celda_foto.width = Cm(10)
+                
+                # Insertar imagen ajustada
+                img_stream = io.BytesIO(img_bytes)
+                p_foto = celda_foto.paragraphs[0]
+                p_foto.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                run_foto = p_foto.add_run()
+                run_foto.add_picture(img_stream, width=Cm(9))
+                
+                # Separador
+                doc.add_paragraph()
+                sep = doc.add_paragraph()
+                sep.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                _run(sep.add_run("─" * 80), BRAND["secondary_blue"], False, 8)
+                doc.add_paragraph()
+                
+            except Exception as e:
+                print(f"Error Word foto {codigo}: {e}")
 
     buf = io.BytesIO()
     doc.save(buf)
@@ -427,32 +538,89 @@ def generar_word(df, resumen, fotos_dict=None):
     return buf.getvalue()
 
 # ============================================================
-# EXPORTAR A EXCEL (no CSV)
+# EXPORTAR FOTOS EN ZIP (UNA POR CÓDIGO)
 # ============================================================
-def exportar_a_excel(df, resumen):
-    """Exporta el DataFrame a Excel nativo con formato."""
+def exportar_fotos_zip(fotos_dict, df=None):
+    """
+    Genera un ZIP con todas las fotos nombradas por código.
+    fotos_dict: {codigo: bytes_de_imagen}
+    df: DataFrame para obtener datos adicionales (opcional)
+    """
+    zip_buffer = io.BytesIO()
+    
+    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for codigo, img_bytes in fotos_dict.items():
+            # Nombre del archivo: CODIGO.jpg
+            nombre_archivo = f"{codigo}.jpg"
+            zf.writestr(nombre_archivo, img_bytes)
+            
+            # Si hay DataFrame, agregar archivo de texto con datos
+            if df is not None:
+                row_data = df[df["CODIGO"] == codigo]
+                if not row_data.empty:
+                    r = row_data.iloc[0]
+                    info_txt = (
+                        f"CÓDIGO: {codigo}\n"
+                        f"AMT: {r.get('AMT', '')}\n"
+                        f"Observación: {r.get('OBSERVACION', '')}\n"
+                        f"Estado: {r.get('ESTADO', '')}\n"
+                        f"Distrito: {r.get('DISTRITO', '')}\n"
+                        f"UTM 17S: E={r.get('UTM_E', '')} N={r.get('UTM_N', '')}\n"
+                        f"Lat/Lon: {r.get('LATITUD', '')}, {r.get('LONGITUD', '')}\n"
+                        f"Maps: {r.get('MAPS_LINK', '')}\n"
+                        f"Fecha exportación: {datetime.now().strftime('%d/%m/%Y %H:%M')}\n"
+                    )
+                    zf.writestr(f"{codigo}_datos.txt", info_txt)
+    
+    zip_buffer.seek(0)
+    return zip_buffer.getvalue()
+
+# ============================================================
+# EXPORTAR A EXCEL
+# ============================================================
+def exportar_a_excel(df, resumen, fotos_dict=None, observaciones_campo=None):
+    df_export = df.copy()
+    
+    if observaciones_campo:
+        df_export['OBS_CAMPO'] = df_export['CODIGO'].map(observaciones_campo).fillna('')
+    else:
+        df_export['OBS_CAMPO'] = ''
+    
+    if fotos_dict:
+        rutas = {}
+        for codigo, img_bytes in fotos_dict.items():
+            ruta = FOTOS_DIR / f"foto_{codigo}_{datetime.now():%Y%m%d}.jpg"
+            with open(ruta, "wb") as f:
+                f.write(img_bytes)
+            rutas[codigo] = str(ruta)
+        df_export['FOTO_RUTA'] = df_export['CODIGO'].map(rutas).fillna('')
+    else:
+        df_export['FOTO_RUTA'] = ''
+    
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        # Hoja 1: Datos completos
-        df.to_excel(writer, sheet_name='Observaciones', index=False)
+        df_export.to_excel(writer, sheet_name='Observaciones', index=False)
         
-        # Hoja 2: Resumen
         resumen_df = pd.DataFrame([
             {"Métrica": "Total", "Valor": resumen["total"]},
             {"Métrica": "Pendientes", "Valor": resumen["pendientes"]},
             {"Métrica": "Ejecutadas", "Valor": resumen["ejecutadas"]},
+            {"Métrica": "Fecha Exportación", "Valor": datetime.now().strftime('%d/%m/%Y %H:%M')},
         ])
         resumen_df.to_excel(writer, sheet_name='Resumen', index=False)
         
-        # Hoja 3: Por AMT
         amt_df = pd.DataFrame([{"AMT": k, "Cantidad": v} 
                                for k, v in sorted(resumen["por_amtdf"].items(), key=lambda x: -x[1])])
         amt_df.to_excel(writer, sheet_name='Por_AMT', index=False)
         
-        # Hoja 4: Por Distrito
         dis_df = pd.DataFrame([{"Distrito": k, "Cantidad": v} 
                                for k, v in sorted(resumen["por_distrito"].items(), key=lambda x: -x[1])])
         dis_df.to_excel(writer, sheet_name='Por_Distrito', index=False)
+        
+        if fotos_dict:
+            df_con_foto = df_export[df_export['FOTO_RUTA'] != '']
+            if not df_con_foto.empty:
+                df_con_foto.to_excel(writer, sheet_name='Con_Foto', index=False)
     
     output.seek(0)
     return output.getvalue()

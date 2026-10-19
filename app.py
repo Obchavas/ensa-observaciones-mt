@@ -7,9 +7,9 @@ from pathlib import Path
 
 from utils import (BRAND, cargar_excel, generar_resumen, crear_mapa,
                    generar_pdf, generar_word, whatsapp_link, mailto_link,
-                   exportar_a_excel)
+                   exportar_a_excel, exportar_fotos_zip)
 
-st.set_page_config(page_title="ENSA · Observaciones MT", page_icon="⚡", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="ENSA · Observaciones MT", page_icon="", layout="wide", initial_sidebar_state="collapsed")
 
 # ============================================================
 # CSS CORPORATIVO
@@ -84,8 +84,21 @@ thead th { background: #003B70 !important; color: #FFFFFF !important; font-famil
 
 .dl-bar { background: #F4F7FB; border-radius: 20px; height: 14px; overflow: hidden; margin-top: 10px; }
 .dl-bar > div { height: 100%; background: linear-gradient(90deg, #0072CE, #38B449); border-radius: 20px; }
+
+.avance-verde { background: linear-gradient(90deg, #38B449, #0072CE) !important; }
+.avance-parcial { background: linear-gradient(90deg, #FFA500, #0072CE) !important; }
 </style>
 """, unsafe_allow_html=True)
+
+# ============================================================
+# INICIALIZAR SESSION STATE
+# ============================================================
+if "datos_cargados" not in st.session_state:
+    st.session_state.datos_cargados = False
+if "df_completo" not in st.session_state:
+    st.session_state.df_completo = None
+if "avance_por_codigo" not in st.session_state:
+    st.session_state.avance_por_codigo = {}
 
 # ============================================================
 # BARRA SUPERIOR
@@ -102,7 +115,7 @@ with top1:
     if logo_url:
         st.image(logo_url, width=130)
     else:
-        st.markdown("###  ENSA")
+        st.markdown("### ⚡ ENSA")
 with top2:
     st.markdown("### Sistema de Observaciones MT · Meta 2022")
     st.caption("*Trabajamos para tu Desarrollo · Zona UTM 17S Lambayeque*")
@@ -110,220 +123,428 @@ with top2:
 st.markdown("---")
 
 # ============================================================
-# SIDEBAR
+# TABS PRINCIPALES
 # ============================================================
-st.sidebar.subheader("📁 Cargar Archivo")
-archivo = st.sidebar.file_uploader("Excel (MetaMT_2022.xlsx)", type=["xlsx", "xls"])
+tab_admin, tab_campo = st.tabs(["👨‍💼 Administrador (Carga de Datos)", "👷 Técnico de Campo"])
 
-if archivo is None:
-    st.markdown("""<div class="dl-banner">
-    <h1>⚡ Informe de Observaciones MT · MetaMT 2022</h1>
-    <p>Verificación en campo con coordenadas UTM 17S / geográficas y mapa interactivo</p>
-    </div>""", unsafe_allow_html=True)
-    st.info("👈 Sube el archivo Excel desde el panel izquierdo para comenzar.")
-    st.stop()
+# ============================================================
+# PESTAÑA ADMINISTRADOR
+# ============================================================
+with tab_admin:
+    st.markdown("### 👨‍💼 Panel de Administrador")
+    st.info("🔒 **Solo tú tienes acceso a esta pestaña** para cargar el Excel maestro")
+    
+    if not st.session_state.datos_cargados:
+        archivo = st.file_uploader(" Cargar Excel Maestro (MetaMT_2022.xlsx)", type=["xlsx", "xls"])
+        
+        if archivo is not None:
+            with st.spinner("Procesando archivo..."):
+                try:
+                    df = cargar_excel(archivo)
+                    st.session_state.df_completo = df
+                    st.session_state.datos_cargados = True
+                    st.success(f"✅ {len(df)} observaciones cargadas correctamente")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ Error: {e}")
+    else:
+        st.success("✅ Excel cargado correctamente")
+        st.write(f"**Total de observaciones:** {len(st.session_state.df_completo)}")
+        
+        # Mostrar resumen por alimentador
+        if "AMT" in st.session_state.df_completo.columns:
+            st.markdown("### 📊 Resumen por Alimentador")
+            resumen_amt = st.session_state.df_completo["AMT"].value_counts().reset_index()
+            resumen_amt.columns = ["Alimentador", "Total Observaciones"]
+            st.dataframe(resumen_amt, use_container_width=True)
+        
+        # Botón para descargar base actualizada
+        if st.button("📥 Descargar Base de Datos Actualizada"):
+            df_export = st.session_state.df_completo.copy()
+            df_export["VISITADO"] = df_export["CODIGO"].map(
+                lambda x: st.session_state.avance_por_codigo.get(x, {}).get("visitado", False)
+            )
+            df_export["OBS_CAMPO"] = df_export["CODIGO"].map(
+                lambda x: st.session_state.avance_por_codigo.get(x, {}).get("obs", "")
+            )
+            
+            excel_data = exportar_a_excel(df_export, generar_resumen(df_export))
+            st.download_button(
+                "️ Descargar Excel con Avance",
+                data=excel_data,
+                file_name=f"ENSA_Obs_MT_Actualizado_{datetime.now():%Y%m%d}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+        
+        # Botón para reiniciar
+        if st.button("🔄 Cargar Nuevo Excel"):
+            st.session_state.datos_cargados = False
+            st.session_state.df_completo = None
+            st.session_state.avance_por_codigo = {}
+            st.rerun()
 
-with st.spinner("Procesando archivo..."):
-    try:
-        df = cargar_excel(archivo)
-    except Exception as e:
-        st.error(f" Error al procesar: {e}")
+# ============================================================
+# PESTAÑA TÉCNICO DE CAMPO (COMPLETA CON REPORTES)
+# ============================================================
+with tab_campo:
+    if not st.session_state.datos_cargados:
+        st.warning("️ El administrador aún no ha cargado los datos. Contacta con tu supervisor.")
         st.stop()
-
-if df.empty:
-    st.error("El archivo no contiene datos válidos.")
-    st.stop()
-
-if 'AMT' not in df.columns:
-    st.error(f"❌ No se encontró 'Código Alimentador MT'. Columnas: {list(df.columns)}")
-    st.stop()
-
-# Filtros
-st.sidebar.markdown("---")
-st.sidebar.subheader(" Filtros")
-
-amts = sorted([str(x) for x in df["AMT"].dropna().unique().tolist()])
-amt_sel = st.sidebar.multiselect("Alimentador MT (AMT)", amts, default=amts[:3] if len(amts) > 3 else amts)
-
-estados = df["ESTADO"].dropna().unique().tolist() if "ESTADO" in df.columns else []
-est_sel = st.sidebar.multiselect("Estado", estados, default=estados)
-
-distritos = df["DISTRITO"].dropna().unique().tolist() if "DISTRITO" in df.columns else []
-dis_sel = st.sidebar.multiselect("Distrito", distritos)
-
-busq = st.sidebar.text_input(" Buscar en observación", "")
-
-d = df.copy()
-if amt_sel:  d = d[d["AMT"].astype(str).isin(amt_sel)]
-if est_sel and "ESTADO" in d.columns:  d = d[d["ESTADO"].isin(est_sel)]
-if dis_sel and "DISTRITO" in d.columns:  d = d[d["DISTRITO"].isin(dis_sel)]
-if busq and "OBSERVACION" in d.columns:
-    d = d[d["OBSERVACION"].astype(str).str.contains(busq, case=False, na=False)]
-
-st.sidebar.success(f"✅ {len(d)} registros filtrados")
-
-# ============================================================
-# DASHBOARD
-# ============================================================
-res = generar_resumen(d)
-pct = round(res["ejecutadas"] / res["total"] * 100, 1) if res["total"] else 0
-
-st.markdown("""<div class="dl-banner">
-<h1>📊 Dashboard de Observaciones MT</h1>
-<p>Resumen ejecutivo del estado de las instalaciones</p>
-</div>""", unsafe_allow_html=True)
-
-c1, c2, c3, c4 = st.columns(4)
-
-def card(col, lbl, num, sub, w):
-    with col:
-        st.markdown(f"""<div class="dl-card">
-        <div class="lbl">{lbl}</div>
-        <div class="num">{num}</div>
-        <div class="sub">{sub}</div>
-        <div class="dl-bar"><div style="width:{min(w,100):.0f}%"></div></div>
-        </div>""", unsafe_allow_html=True)
-
-card(c1, "Total", res["total"], "Observaciones filtradas", 100)
-card(c2, "Pendientes", res["pendientes"], "Por Subsanar", res["pendientes"]/res["total"]*100 if res["total"] else 0)
-card(c3, "Ejecutadas", res["ejecutadas"], "Subsanadas en campo", res["ejecutadas"]/res["total"]*100 if res["total"] else 0)
-card(c4, "Avance", f"{pct}%", "Cumplimiento de la meta", pct)
-
-st.markdown("---")
-
-# ============================================================
-# TABS
-# ============================================================
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["🗺️ Mapa", "📋 Listado", "📊 Resumen AMT", "📸 Captura en Campo", "📥 Reportes"])
-
-# ----- MAPA -----
-with tab1:
-    st.subheader("Mapa de observaciones georreferenciadas (UTM 17S Lambayeque)")
-    mapa = crear_mapa(d)
+    
+    st.markdown("### 👷 Panel de Técnico de Campo")
+    
+    # Selector de alimentador
+    if "AMT" in st.session_state.df_completo.columns:
+        amts_disponibles = sorted(st.session_state.df_completo["AMT"].dropna().unique().tolist())
+        
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            amt_seleccionado = st.selectbox(
+                "🔌 Selecciona tu Alimentador MT asignado:",
+                amts_disponibles,
+                index=0 if amts_disponibles else None
+            )
+        
+        # Filtrar datos por alimentador
+        df_filtrado = st.session_state.df_completo[
+            st.session_state.df_completo["AMT"] == amt_seleccionado
+        ].copy()
+        
+        # Calcular avance
+        total_obs = len(df_filtrado)
+        visitados = sum(1 for cod in df_filtrado["CODIGO"] if st.session_state.avance_por_codigo.get(cod, {}).get("visitado", False))
+        porcentaje = (visitados / total_obs * 100) if total_obs > 0 else 0
+        
+        with col2:
+            st.metric("📈 Avance", f"{porcentaje:.1f}%", f"{visitados}/{total_obs}")
+        
+        st.markdown("---")
+        
+        # Dashboard de avance
+        st.markdown("###  Tu Avance - " + amt_seleccionado)
+        c1, c2, c3, c4 = st.columns(4)
+        
+        with c1:
+            st.markdown(f"""<div class="dl-card">
+            <div class="lbl">Total Observaciones</div>
+            <div class="num">{total_obs}</div>
+            <div class="sub">Asignadas a este AMT</div>
+            </div>""", unsafe_allow_html=True)
+        
+        with c2:
+            st.markdown(f"""<div class="dl-card">
+            <div class="lbl">Visitadas</div>
+            <div class="num">{visitados}</div>
+            <div class="sub">Completadas en campo</div>
+            </div>""", unsafe_allow_html=True)
+        
+        with c3:
+            st.markdown(f"""<div class="dl-card">
+            <div class="lbl">Pendientes</div>
+            <div class="num">{total_obs - visitados}</div>
+            <div class="sub">Por visitar</div>
+            </div>""", unsafe_allow_html=True)
+        
+        with c4:
+            clase_barra = "avance-verde" if porcentaje == 100 else "avance-parcial" if porcentaje > 0 else ""
+            st.markdown(f"""<div class="dl-card">
+            <div class="lbl">Porcentaje</div>
+            <div class="num">{porcentaje:.0f}%</div>
+            <div class="dl-bar"><div class="{clase_barra}" style="width:{porcentaje}%"></div></div>
+            </div>""", unsafe_allow_html=True)
+        
+        st.markdown("---")
+        
+       # ----- TAB: VER OBSERVACIONES -----
+with tab_ver:
+    st.markdown("### 📋 Listado de Observaciones")
+    
+    # ============================================================
+    # FILTROS (incluyendo nuevo filtro de estado de visita)
+    # ============================================================
+    col_f1, col_f2, col_f3 = st.columns(3)
+    
+    with col_f1:
+        estado_filtro = st.multiselect(
+            "🔍 Filtrar por Estado Original:",
+            options=df_filtrado["ESTADO"].dropna().unique().tolist() if "ESTADO" in df_filtrado.columns else [],
+            default=[]
+        )
+    
+    with col_f2:
+        distrito_filtro = st.multiselect(
+            "🔍 Filtrar por Distrito:",
+            options=df_filtrado["DISTRITO"].dropna().unique().tolist() if "DISTRITO" in df_filtrado.columns else [],
+            default=[]
+        )
+    
+    with col_f3:
+        # NUEVO FILTRO: Estado de Visita
+        estado_visita_filtro = st.radio(
+            "📍 Estado de Visita:",
+            options=["Todas", "⏳ Pendientes", "✅ Visitadas"],
+            index=0,
+            horizontal=True
+        )
+    
+    # Aplicar filtros
+    df_mostrar = df_filtrado.copy()
+    
+    # Filtro por estado original
+    if estado_filtro:
+        df_mostrar = df_mostrar[df_mostrar["ESTADO"].isin(estado_filtro)]
+    
+    # Filtro por distrito
+    if distrito_filtro:
+        df_mostrar = df_mostrar[df_mostrar["DISTRITO"].isin(distrito_filtro)]
+    
+    # NUEVO: Filtro por estado de visita
+    if estado_visita_filtro == "⏳ Pendientes":
+        df_mostrar = df_mostrar[
+            ~df_mostrar["CODIGO"].isin([
+                cod for cod in df_mostrar["CODIGO"] 
+                if st.session_state.avance_por_codigo.get(cod, {}).get("visitado", False)
+            ])
+        ]
+    elif estado_visita_filtro == "✅ Visitadas":
+        df_mostrar = df_mostrar[
+            df_mostrar["CODIGO"].isin([
+                cod for cod in df_mostrar["CODIGO"] 
+                if st.session_state.avance_por_codigo.get(cod, {}).get("visitado", False)
+            ])
+        ]
+    
+    # Mostrar indicador de cuántos registros coinciden
+    st.info(f" Mostrando **{len(df_mostrar)}** de **{len(df_filtrado)}** observaciones")
+    
+    # Agregar columna de estado de visita
+    df_mostrar = df_mostrar.copy()
+    df_mostrar["ESTADO_VISITA"] = df_mostrar["CODIGO"].apply(
+        lambda x: "✅ Visitada" if st.session_state.avance_por_codigo.get(x, {}).get("visitado", False) else "⏳ Pendiente"
+    )
+    
+    # Reordenar columnas para mostrar ESTADO_VISITA al inicio
+    cols_tabla = ["ESTADO_VISITA", "CODIGO", "OBSERVACION", "ESTADO", "DISTRITO", "LATITUD", "LONGITUD"]
+    cols_disponibles = [c for c in cols_tabla if c in df_mostrar.columns]
+    
+    # Mostrar tabla
+    st.dataframe(
+        df_mostrar[cols_disponibles],
+        use_container_width=True,
+        height=400
+    )
+    
+    # ============================================================
+    # RESUMEN RÁPIDO DE FILTROS
+    # ============================================================
+    col_r1, col_r2, col_r3 = st.columns(3)
+    
+    with col_r1:
+        total_pendientes = len([
+            cod for cod in df_filtrado["CODIGO"] 
+            if not st.session_state.avance_por_codigo.get(cod, {}).get("visitado", False)
+        ])
+        st.metric("⏳ Pendientes", total_pendientes)
+    
+    with col_r2:
+        total_visitadas = len([
+            cod for cod in df_filtrado["CODIGO"] 
+            if st.session_state.avance_por_codigo.get(cod, {}).get("visitado", False)
+        ])
+        st.metric("✅ Visitadas", total_visitadas)
+    
+    with col_r3:
+        st.metric("📋 Total", len(df_filtrado))
+    
+    # ============================================================
+    # MAPA
+    # ============================================================
+    st.markdown("---")
+    st.markdown("### ️ Mapa de Observaciones")
+    
+    # Opción para mostrar solo visitadas/pendientes en el mapa
+    mapa_filtro = st.radio(
+        "🗺️ Mostrar en mapa:",
+        options=["Todas", "⏳ Solo Pendientes", "✅ Solo Visitadas"],
+        index=0,
+        horizontal=True
+    )
+    
+    df_mapa = df_filtrado.copy()
+    if mapa_filtro == " Solo Pendientes":
+        df_mapa = df_mapa[
+            ~df_mapa["CODIGO"].isin([
+                cod for cod in df_mapa["CODIGO"] 
+                if st.session_state.avance_por_codigo.get(cod, {}).get("visitado", False)
+            ])
+        ]
+    elif mapa_filtro == "✅ Solo Visitadas":
+        df_mapa = df_mapa[
+            df_mapa["CODIGO"].isin([
+                cod for cod in df_mapa["CODIGO"] 
+                if st.session_state.avance_por_codigo.get(cod, {}).get("visitado", False)
+            ])
+        ]
+    
+    mapa = crear_mapa(df_mapa)
     if mapa:
         from streamlit_folium import st_folium
-        st_folium(mapa, width=None, height=620, returned_objects=[])
+        st_folium(mapa, width=None, height=500, returned_objects=[])
     else:
         st.warning("Sin coordenadas válidas para graficar.")
-
-# ----- LISTADO -----
-with tab2:
-    st.subheader("Listado de observaciones")
-    cols = [c for c in ["CODIGO", "AMT", "OBSERVACION", "ESTADO", "DISTRITO", "LATITUD", "LONGITUD", "MAPS_LINK"] if c in d.columns]
-    tbl = d[cols].copy()
-    if "MAPS_LINK" in tbl.columns:
-        tbl["MAPS_LINK"] = tbl["MAPS_LINK"].apply(lambda x: f'<a href="{x}" target="_blank">📍 Ver mapa</a>' if x else "")
-    st.dataframe(tbl, use_container_width=True, height=520)
-
-# ----- RESUMEN AMT -----
-with tab3:
-    st.subheader("Cantidad de observaciones por Alimentador MT (AMT)")
-    if res["por_amtdf"]:
-        damt = pd.DataFrame([{"AMT": str(k), "Cantidad": v} for k, v in sorted(res["por_amtdf"].items(), key=lambda x: -x[1])])
-        ch = alt.Chart(damt).mark_bar(cornerRadiusTopLeft=6, cornerRadiusTopRight=6).encode(
-            x=alt.X("AMT:N", sort="-y"), y=alt.Y("Cantidad:Q"), color=alt.value(BRAND["secondary_blue"])
-        ).properties(height=380)
-        st.altair_chart(ch, use_container_width=True)
-        st.dataframe(damt, use_container_width=True)
-
-# ----- CAPTURA EN CAMPO CON FOTOS -----
-with tab4:
-    st.subheader(" Captura de observación en campo")
-    st.info("Selecciona el código, toma la foto con GPS activo y registra el estado real.")
-    
-    cods = d["CODIGO"].dropna().unique().tolist()
-    cod = st.selectbox("Código a verificar", cods)
-    
-    if cod:
-        r = d[d["CODIGO"] == cod].iloc[0]
-        a, b = st.columns(2)
-        with a:
-            st.markdown(f"**Observación:** {r.get('OBSERVACION','')}")
-            st.markdown(f"**AMT:** {r.get('AMT','')} · **Distrito:** {r.get('DISTRITO','')}")
-            st.markdown(f"**Estado:** {r.get('ESTADO','')}")
-        with b:
-            st.markdown(f"**UTM 17S:** E={r.get('UTM_E','')} · N={r.get('UTM_N','')}")
-            st.markdown(f"**Geográficas:** {r.get('LATITUD','')} , {r.get('LONGITUD','')}")
-            if r.get("MAPS_LINK"):
-                st.markdown(f"[ Abrir Google Maps]({r['MAPS_LINK']})")
-
-        foto = st.camera_input(" Tomar foto con coordenadas GPS")
-        nuevo = st.selectbox("Estado tras la verificación", ["Pendiente", "Ejecutada", "Requiere replanificación"])
-        obs = st.text_area("Observaciones de campo", "")
-
-        if foto is not None:
-            st.image(foto, caption="Foto capturada en campo", use_column_width=True)
+        
+        # ----- TAB: REGISTRAR EN CAMPO -----
+        with tab_registrar:
+            st.markdown("### 📸 Registrar Visita en Campo")
             
-            # Guardar foto en session_state
-            if "fotos_campo" not in st.session_state:
-                st.session_state.fotos_campo = {}
-            st.session_state.fotos_campo[cod] = foto.getvalue()
+            codigos_pendientes = [
+                cod for cod in df_filtrado["CODIGO"] 
+                if not st.session_state.avance_por_codigo.get(cod, {}).get("visitado", False)
+            ]
             
-            st.success(f"✅ Foto guardada para código {cod}")
+            if codigos_pendientes:
+                codigo_seleccionado = st.selectbox(
+                    "Selecciona el código a registrar:",
+                    codigos_pendientes
+                )
+                
+                # Mostrar datos del código seleccionado
+                obs_data = df_filtrado[df_filtrado["CODIGO"] == codigo_seleccionado].iloc[0]
+                
+                col_info1, col_info2 = st.columns(2)
+                with col_info1:
+                    st.markdown(f"""
+                    **Código:** {codigo_seleccionado}  
+                    **AMT:** {obs_data.get('AMT', 'N/A')}  
+                    **Observación:** {obs_data.get('OBSERVACION', 'N/A')}  
+                    **Estado Original:** {obs_data.get('ESTADO', 'N/A')}
+                    """)
+                
+                with col_info2:
+                    st.markdown(f"""
+                    **Distrito:** {obs_data.get('DISTRITO', 'N/A')}  
+                    **UTM E:** {obs_data.get('UTM_E', 'N/A')}  
+                    **UTM N:** {obs_data.get('UTM_N', 'N/A')}  
+                    **Lat/Lon:** {obs_data.get('LATITUD', 'N/A')}, {obs_data.get('LONGITUD', 'N/A')}
+                    """)
+                
+                # Formulario de registro
+                with st.form(f"registro_{codigo_seleccionado}"):
+                    foto = st.camera_input("📸 Tomar foto en campo")
+                    if foto is None:
+                        foto = st.file_uploader(" O subir foto desde galería", type=['jpg', 'jpeg', 'png'], key=f"upload_{codigo_seleccionado}")
+                    
+                    obs_campo = st.text_area("📝 Observaciones de campo (opcional):")
+                    estado_final = st.selectbox(
+                        "Estado después de la visita:",
+                        ["Pendiente", "Ejecutada", "Requiere replanificación"]
+                    )
+                    
+                    submitted = st.form_submit_button("💾 Guardar Visita", use_container_width=True)
+                    
+                    if submitted:
+                        if foto is not None:
+                            st.session_state.avance_por_codigo[codigo_seleccionado] = {
+                                "visitado": True,
+                                "foto": foto.getvalue() if hasattr(foto, 'getvalue') else foto.read(),
+                                "obs": obs_campo,
+                                "estado_final": estado_final,
+                                "fecha_visita": datetime.now().isoformat()
+                            }
+                            st.success(f"✅ Visita registrada para {codigo_seleccionado}")
+                            st.rerun()
+                        else:
+                            st.error("❌ Debes tomar o subir una foto")
+            else:
+                st.success("🎉 ¡Felicitaciones! Has visitado todas las observaciones de este alimentador.")
+        
+        # ----- TAB: GENERAR REPORTES (COMPLETO) -----
+        with tab_reportes:
+            st.markdown("###  Generar Reportes")
             
-            msg = (f"*ENSA · VERIFICACION EN CAMPO*\n"
-                   f"Codigo: {cod}\nAMT: {r.get('AMT','')}\nEstado: {nuevo}\n"
-                   f"UTM 17S: E={r.get('UTM_E','')} N={r.get('UTM_N','')}\n"
-                   f"Lat/Lon: {r.get('LATITUD','')}, {r.get('LONGITUD','')}\n"
-                   f"Mapa: {r.get('MAPS_LINK','')}\nObs: {obs}")
-            tel = st.text_input("WhatsApp (con código país, ej 51987654321)", "51")
-            cA, cB = st.columns(2)
-            with cA:
-                if st.button("📲 Enviar por WhatsApp"):
-                    st.markdown(f"[Abrir WhatsApp]({whatsapp_link(tel, msg)})")
-            with cB:
-                st.download_button("💾 Descargar foto", foto.getvalue(),
-                                   file_name=f"obs_{cod}_{datetime.now():%Y%m%d_%H%M%S}.jpg",
-                                   mime="image/jpeg")
-
-# ----- REPORTES -----
-with tab5:
-    st.subheader("Generación y envío de reportes")
-    
-    # Mostrar fotos capturadas
-    if "fotos_campo" in st.session_state and st.session_state.fotos_campo:
-        st.info(f"📸 {len(st.session_state.fotos_campo)} foto(s) capturada(s) en campo")
-    
-    r1, r2, r3 = st.columns(3)
-    
-    with r1:
-        st.markdown("#### 📄 Reporte PDF")
-        if st.button("Generar PDF", use_container_width=True):
-            fotos = st.session_state.get("fotos_campo", {})
-            st.download_button("⬇️ Descargar PDF", data=generar_pdf(d, res, fotos),
-                               file_name=f"ENSA_Obs_MT_{datetime.now():%Y%m%d}.pdf", mime="application/pdf", use_container_width=True)
-    
-    with r2:
-        st.markdown("#### 📝 Reporte Word")
-        if st.button("Generar Word", use_container_width=True):
-            fotos = st.session_state.get("fotos_campo", {})
-            st.download_button("⬇️ Descargar Word", data=generar_word(d, res, fotos),
-                               file_name=f"ENSA_Obs_MT_{datetime.now():%Y%m%d}.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", use_container_width=True)
-    
-    with r3:
-        st.markdown("#### 📊 Reporte Excel")
-        if st.button("Generar Excel", use_container_width=True):
-            st.download_button("⬇️ Descargar Excel", data=exportar_a_excel(d, res),
-                               file_name=f"ENSA_Obs_MT_{datetime.now():%Y%m%d}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
-
-    st.markdown("---")
-    st.markdown("#### 📤 Envío rápido")
-    resumen_txt = (f"*ENSA · RESUMEN OBSERVACIONES MT*\n"
-                   f"Fecha: {datetime.now():%d/%m/%Y}\n"
-                   f"Total: {res['total']} | Pendientes: {res['pendientes']} | "
-                   f"Ejecutadas: {res['ejecutadas']} | Avance: {pct}%\n\n*Top AMT:*\n")
-    for i, (k, v) in enumerate(list(res["por_amtdf"].items())[:5], 1):
-        resumen_txt += f"{i}. {k}: {v}\n"
-
-    cc1, cc2 = st.columns(2)
-    with cc1:
-        tel = st.text_input("WhatsApp destino", "51", key="tel2")
-        if st.button("📲 Enviar resumen por WhatsApp"):
-            st.markdown(f"[Abrir WhatsApp con el resumen]({whatsapp_link(tel, resumen_txt)})")
-    with cc2:
-        mail = st.text_input("Correo destino", "supervisor@ensa.com.pe")
-        if st.button("📧 Preparar correo"):
-            st.markdown(f"[Abrir correo con el resumen]({mailto_link(mail, 'ENSA - Resumen Observaciones MT', resumen_txt)})")
+            fotos_count = len([cod for cod in df_filtrado["CODIGO"] if cod in st.session_state.avance_por_codigo])
+            
+            if fotos_count > 0:
+                st.success(f"📸 {fotos_count} observación(es) registrada(s) con foto")
+            else:
+                st.info("No hay observaciones registradas aún. Ve a la pestaña ' Registrar en Campo'.")
+            
+            st.markdown("---")
+            
+            # Botones de reportes
+            r1, r2, r3, r4 = st.columns(4)
+            
+            with r1:
+                st.markdown("#### 📄 Reporte PDF")
+                if st.button("Generar PDF", use_container_width=True):
+                    # Filtrar solo los registros con foto
+                    codigos_con_foto = [cod for cod in df_filtrado["CODIGO"] if cod in st.session_state.avance_por_codigo]
+                    df_con_fotos = df_filtrado[df_filtrado["CODIGO"].isin(codigos_con_foto)]
+                    fotos_dict = {cod: st.session_state.avance_por_codigo[cod]["foto"] for cod in codigos_con_foto}
+                    
+                    st.download_button(
+                        "⬇️ Descargar PDF",
+                        data=generar_pdf(df_con_fotos, generar_resumen(df_con_fotos), fotos_dict),
+                        file_name=f"ENSA_{amt_seleccionado}_{datetime.now():%Y%m%d}.pdf",
+                        mime="application/pdf",
+                        use_container_width=True
+                    )
+            
+            with r2:
+                st.markdown("#### 📝 Reporte Word")
+                if st.button("Generar Word", use_container_width=True):
+                    codigos_con_foto = [cod for cod in df_filtrado["CODIGO"] if cod in st.session_state.avance_por_codigo]
+                    df_con_fotos = df_filtrado[df_filtrado["CODIGO"].isin(codigos_con_foto)]
+                    fotos_dict = {cod: st.session_state.avance_por_codigo[cod]["foto"] for cod in codigos_con_foto}
+                    
+                    st.download_button(
+                        "⬇️ Descargar Word",
+                        data=generar_word(df_con_fotos, generar_resumen(df_con_fotos), fotos_dict),
+                        file_name=f"ENSA_{amt_seleccionado}_{datetime.now():%Y%m%d}.docx",
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        use_container_width=True
+                    )
+            
+            with r3:
+                st.markdown("#### 📊 Reporte Excel")
+                if st.button("Generar Excel", use_container_width=True):
+                    codigos_con_foto = [cod for cod in df_filtrado["CODIGO"] if cod in st.session_state.avance_por_codigo]
+                    df_con_fotos = df_filtrado[df_filtrado["CODIGO"].isin(codigos_con_foto)]
+                    
+                    # Agregar columnas de avance
+                    df_export = df_con_fotos.copy()
+                    df_export["VISITADO"] = df_export["CODIGO"].map(
+                        lambda x: st.session_state.avance_por_codigo.get(x, {}).get("visitado", False)
+                    )
+                    df_export["OBS_CAMPO"] = df_export["CODIGO"].map(
+                        lambda x: st.session_state.avance_por_codigo.get(x, {}).get("obs", "")
+                    )
+                    
+                    st.download_button(
+                        "️ Descargar Excel",
+                        data=exportar_a_excel(df_export, generar_resumen(df_con_fotos)),
+                        file_name=f"ENSA_{amt_seleccionado}_{datetime.now():%Y%m%d}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True
+                    )
+            
+            with r4:
+                st.markdown("#### 📦 Extraer Fotos ZIP")
+                if st.button("Extraer Fotos", use_container_width=True):
+                    codigos_con_foto = [cod for cod in df_filtrado["CODIGO"] if cod in st.session_state.avance_por_codigo]
+                    fotos_dict = {cod: st.session_state.avance_por_codigo[cod]["foto"] for cod in codigos_con_foto}
+                    
+                    if fotos_dict:
+                        zip_data = exportar_fotos_zip(fotos_dict, df_filtrado)
+                        st.download_button(
+                            "⬇️ Descargar ZIP",
+                            data=zip_data,
+                            file_name=f"Fotos_{amt_seleccionado}_{datetime.now():%Y%m%d}.zip",
+                            mime="application/zip",
+                            use_container_width=True
+                        )
+                    else:
+                        st.warning("No hay fotos para extraer")
 
 # ============================================================
 # PIE
